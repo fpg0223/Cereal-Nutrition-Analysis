@@ -1,0 +1,836 @@
+---
+title: "Predicting Cereal Ratings from Nutritional Data"
+author: "Fabiana Gutierrez"
+date: "2025-05-08"
+output:
+  pdf_document:
+    includes:
+      in_header: prevent-split.tex
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,  
+  results = 'asis'
+)
+
+cereal_rating <- read.csv("~/Desktop/Stat 382/CerealsRating.csv")
+```
+
+
+
+This project uses data from Consumer Reports on 77 breakfast cereals to examine how nutritional features influence overall cereal ratings. Seven predictors were analyzed: protein, sodium, fiber, sugars, vitamins, serving weight, and volume. A multiple linear regression model was built to evaluate the relationship between these variables and the rating, with a focus on checking all model assumptions and improving fit using transformation and variable selection. The final model highlights the strongest nutritional predictors of cereal rating and provides clear, interpretable insights for data-driven decision-making.
+
+# 1. Data Introduction and Description
+
+
+The following table summarizes the response and predictor variables used in the regression analysis:
+
+
+```{r, echo = FALSE, }
+library(kableExtra)
+
+knitr::kable(
+  data.frame(
+    Variable = c("$x_1$ (protein)", "$x_2$ (sodium)", "$x_3$ (fiber)", "$x_4$ (sugars)", 
+                 "$x_5$ (vitamins)", "$x_6$ (weight)", "$x_7$ (cups)", "$y$ (rating)"),
+    Description = c(
+      "Grams of protein per serving",
+      "Milligrams of sodium per serving",
+      "Grams of dietary fiber per serving",
+      "Grams of sugar per serving",
+      "Percent daily vitamin value (0, 25, or 100)",
+      "Weight in ounces per serving",
+      "Cups in one serving",
+      "Consumer Reports cereal rating")
+  ),
+  caption = "Variables and their descriptions",
+  escape = FALSE
+)
+
+```
+
+To prepare the dataset for analysis, we recoded missing values (originally entered as −1) as NA, then removed any incomplete rows. After cleaning, 74 complete observations remained.
+
+
+```{r, echo = FALSE, results='hide'}
+# Replace -1 with NA
+cereal_rating[cereal_rating == -1] <- NA
+
+# Drop any rows with NA values
+clean_data <- na.omit(cereal_rating)
+
+```
+
+Before diving into regression, we start by examining the distribution and relationships among variables.
+
+To visualize how strongly each variable is related to the cereal rating and to each other, we include a correlation heatmap:
+
+```{r matrix, echo = FALSE}
+
+library(corrplot)
+
+# Compute correlation matrix for relevant numeric columns
+cor_matrix <- cor(clean_data[, c("protein", "sodium", "fiber", "sugars", 
+                                 "vitamins", "weight", "cups", "rating")])
+
+# Correlation heatmap
+corrplot(cor_matrix,
+         method = "color",
+         type = "upper",
+         addCoef.col = "black",
+         tl.col = "black",
+         tl.srt = 45,
+         number.cex = 0.7,
+         title = "Correlation Heatmap of Predictors and Rating",
+         mar = c(0,0,2,0))
+```
+
+From the heatmap, we can see that sugar has a strong negative correlation with rating, while fiber shows a strong positive one — consistent with what we expect for nutritional value.
+
+Having explored the correlations across all variables, we now zoom in on the two most relevant ones for this analysis: the response variable rating and the key predictor sugars. We first present summary statistics for each, followed by histograms and a boxplot to visualize their distributions.
+
+```{r, echo = FALSE}
+# Compute five-number summary, mean, and standard deviation
+rating_summary <- summary(clean_data$rating)
+rating_sd <- sd(clean_data$rating)
+# Variance
+rating_var <- var(clean_data$rating)
+
+rating_table <- data.frame(
+  Statistic = c("Minimum", "Q1", "Median", "Q3", "Maximum", "Mean", "Standard Deviation", "Variance"),
+  Value = c(rating_summary[1], rating_summary[2], rating_summary[3], rating_summary[5],
+            rating_summary[6], mean(clean_data$rating), rating_sd, rating_var)
+)
+
+
+kable(rating_table, caption = "Descriptive Statistics for Cereal Rating", digits = 2)
+```
+
+
+```{r, echo = FALSE}
+# Five-number summary and stats for sugars
+sugar_summary <- summary(clean_data$sugars)
+sugar_sd <- sd(clean_data$sugars)
+sugar_var <- var(clean_data$sugars)
+
+sugar_table <- data.frame(
+  Statistic = c("Minimum", "Q1", "Median", "Q3", "Maximum", "Mean", "Standard Deviation", "Variance"),
+  Value = c(sugar_summary[1], sugar_summary[2], sugar_summary[3], sugar_summary[5],
+            sugar_summary[6], mean(clean_data$sugars), sugar_sd, sugar_var)
+)
+
+kable(sugar_table, caption = "Descriptive Statistics for Sugar Content", digits = 2)
+
+```
+
+
+Sugar content ranges from 0 to 15 grams per serving, with a median of 7 and a standard deviation of approximately `r round(sugar_sd, 2)`. To visualize its distribution, we include the histogram below. 
+
+```{r, echo = FALSE}
+hist(clean_data$sugars,
+     main = "Histogram of Sugar Content in Cereals",
+     xlab = "Grams of Sugar per Serving",
+     col = "lightcoral",
+     border = "white",
+     ylim = c(0, 20))
+```
+
+This variability is important to assess because one of our key questions is whether cereals with more sugar tend to receive lower ratings.
+
+
+```{r rating-visualization, echo = FALSE}
+# Visualization of the Response Variable (Cereal Rating)
+par(mfrow = c(1, 2))
+
+hist(clean_data$rating,
+     main = "Histogram of Cereal Ratings",
+     xlab = "Rating",
+     col = "skyblue",
+     border = "white",
+     ylim = c(0, 30))
+
+boxplot(clean_data$rating,
+        main = "Boxplot of Cereal Ratings",
+        xlab = "Cereal Rating",
+        col = "lightpink",
+        horizontal = TRUE)
+
+```
+
+Cereal ratings range from about 18 to 94, with most ratings falling between 30 and 60. The distribution appears roughly symmetric with a visible outlier above 90. The standard deviation of approximately `r round(rating_sd, 2)` suggests moderate spread. This variability in ratings is what we aim to explain using the cereal's nutritional content.
+
+
+<div class="page-break"></div>
+
+# 2. Multiple Linear Regression Analysis
+
+To formally analyze which variables influence cereal ratings, we fit a multiple linear regression model using the cleaned dataset. This model allows us to estimate the effect of each predictor while holding the others constant. The general form of the model is: 
+
+\[
+\begin{aligned}
+\text{rating}_i =\ & \beta_0 + \beta_1 \cdot \text{protein}_i + \beta_2 \cdot \text{sodium}_i + \beta_3 \cdot \text{fiber}_i \\
+& + \beta_4 \cdot \text{sugars}_i + \beta_5 \cdot \text{vitamins}_i + \beta_6 \cdot \text{weight}_i + \beta_7 \cdot \text{cups}_i + \varepsilon_i
+\end{aligned}
+\]
+
+Before interpreting results, we acknowledge the assumptions of multiple linear regression:
+
+- **Linearity**: Each predictor has a linear relationship with the response.
+- **Independence**: The residuals are independent.
+- **Normality**: The residuals are approximately normally distributed.
+- **Equal Variance**: The residuals have constant variance across fitted values.
+
+We test the overall usefulness of the model first.
+
+**Hypotheses (Overall F-test):**
+
+- **H₀**: All regression coefficients are zero (β₁ = β₂ = ⋯ = β₇ = 0)
+- **H₁**: At least one regression coefficient is nonzero
+
+
+```{r, echo = FALSE, results = FALSE}
+# Fit the multiple regression model
+full_model <- lm(rating ~ protein + sodium + fiber + sugars + vitamins + weight + cups, data = clean_data)
+
+# View ANOVA table
+anova(full_model)
+
+# View model summary
+summary(full_model)
+
+```
+
+From the model output:
+
+- **F-statistic** = 120.7 on 7 and 66 degrees of freedom  
+- **p-value** < 0.001  
+
+**Decision**: Reject H₀.  
+**Conclusion**: The model is statistically significant overall, meaning that at least one predictor contributes meaningfully to explaining cereal ratings.
+
+We also examine each coefficient using two-sided t-tests to determine which variables have significant individual effects.
+
+```{r, echo = FALSE, message=FALSE}
+# Create the results table
+results_df <- data.frame(
+  Predictor = c("Sugars", "Fiber", "Sodium", "Protein", "Vitamins", "Weight", "Cups"),
+  Estimate = c(-2.075, 2.828, -0.053, 0.723, -0.034, -0.827, 3.782),
+  t_value = c(-14.92, 10.96, -8.41, 1.32, -1.46, -0.19, 1.60),
+  p_value = c("&lt; 0.001", "&lt; 0.001", "&lt; 0.001", "0.191", "0.150", "0.849", "0.114"),
+
+
+  Decision = c("Reject H₀", "Reject H₀", "Reject H₀", "Do not reject H₀", 
+               "Do not reject H₀", "Do not reject H₀", "Do not reject H₀"),
+  Conclusion = c("More sugar strongly lowers rating", 
+                 "More fiber strongly increases rating", 
+                 "More sodium lowers rating",
+                 "No significant effect", 
+                 "No significant effect", 
+                 "No significant effect", 
+                 "No significant effect"),
+  stringsAsFactors = FALSE
+)
+
+
+# Bold significant predictors and conclusions
+results_df$Predictor <- ifelse(results_df$Decision == "Reject H₀",
+                               paste0("**", results_df$Predictor, "**"),
+                               results_df$Predictor)
+results_df$Conclusion <- ifelse(results_df$Decision == "Reject H₀",
+                                paste0("**", results_df$Conclusion, "**"),
+                                results_df$Conclusion)
+
+# Display table
+kbl(results_df, caption = "t-Tests for Individual Predictors (α = 0.05)", 
+    booktabs = TRUE, escape = FALSE) %>%
+  kable_styling(full_width = FALSE, position = "center") %>%
+  row_spec(0, bold = TRUE)
+
+```
+
+## Checking Assumptions
+
+### Linearity Assumption
+
+To begin validating our regression model, we first check the **linearity assumption** using the residuals vs fitted values plot.
+
+```{r, echo = FALSE}
+# Plot: Residuals vs Fitted to check linearity
+par(mfrow = c(1, 1))  # Reset layout to 1 plot
+
+plot(full_model$fitted.values, full_model$residuals,
+     main = "Residuals vs Fitted Values",
+     xlab = "Fitted Values",
+     ylab = "Residuals",
+     col = "steelblue", pch = 19)
+abline(h = 0, col = "red", lty = 2)
+
+
+```
+
+**Interpretation:** The residuals are fairly randomly scattered with no clear curve or funnel shape.
+
+**Conclusion:** The linearity assumption appears to be satisfied.
+
+### Normality assumption
+
+To evaluate whether the residuals from the regression model are approximately normally distributed, we use both graphical tools and a formal statistical test.
+
+**Hypotheses:**
+
+- **H₀**: The residuals are normally distributed
+
+- **H₁**: The residuals are not normally distributed
+
+```{r, echo = FALSE}
+# Histogram and Q-Q plot of residuals
+par(mfrow = c(1, 2))  # 2 plots side by side
+
+# Histogram
+hist(full_model$residuals,
+     main = "Histogram of Residuals",
+     xlab = "Residuals",
+     col = "lightblue",
+     border = "white")
+
+# Q-Q Plot
+qqnorm(full_model$residuals,
+       main = "Q-Q Plot of Residuals",
+       col = "steelblue", pch = 19)
+qqline(full_model$residuals, col = "red", lty = 2)
+
+```
+
+```{r, echo = FALSE, results = FALSE}
+
+# Shapiro
+
+shapiro.test(full_model$residuals)
+
+```
+
+**Shapiro-Wilk Test Result**
+
+**W = 0.931, p-value = 0.00058**
+
+**Conclusion:** Since p < 0.05, we reject H₀. The residuals are not normally distributed. Some deviation from normality is visible in the Q-Q plot.
+
+### Equal Variance Assumption
+
+We assess whether the residuals have constant variance (homoscedasticity) across levels of the fitted values using the same residuals vs fitted values plot shown above.
+
+**Hypotheses:**
+
+- **H₀**: The residuals have constant variance (homoscedasticity)
+- **H₁**: The residuals do not have constant variance (heteroscedasticity)
+
+```{r, echo =FALSE}
+# Residuals vs Fitted Values Plot (for equal variance assumption)
+par(mfrow = c(1, 1))
+
+plot(full_model$fitted.values, full_model$residuals,
+     main = "Residuals vs Fitted Values",
+     xlab = "Fitted Values",
+     ylab = "Residuals",
+     col = "steelblue", pch = 19)
+abline(h = 0, col = "red", lty = 2)
+```
+The residuals show roughly consistent variance across fitted values. While slight variation in spread is visible at different ranges, no strong pattern of heteroscedasticity is observed.
+
+**Conclusion:** The equal variance assumption appears reasonably satisfied.
+
+### Independence Assumption
+
+To evaluate whether the residuals are independent (i.e., not autocorrelated), we examine the residuals in the order of data collection.
+
+```{r, echo = FALSE}
+# Residuals vs Observation Order plot
+plot(full_model$residuals,
+     type = "b",
+     main = "Residuals vs Observation Order",
+     xlab = "Observation Order",
+     ylab = "Residuals",
+     col = "steelblue", pch = 19)
+abline(h = 0, col = "red", lty = 2)
+
+```
+
+The residuals plot shows some localized clusters and short-term fluctuation patterns, especially early on and around the middle. These may suggest mild autocorrelation, so a formal test is necessary.
+
+```{r, echo = FALSE, results = FALSE}
+library(lmtest)
+dwtest(full_model)
+```
+
+**Durbin-Watson statistic = 1.77, p-value = 0.139**
+
+Since the p-value is greater than 0.05, we do not reject H₀, meaning there is **no significant evidence of autocorrelation in the residuals**.
+
+**Conclusion:** The independence assumption is reasonably satisfied.
+
+
+### Multicollinearity Check
+
+```{r, echo =FALSE, message = FALSE}
+# Load package for VIF
+library(car)
+
+# Calculate VIF for each predictor
+vif_values <- vif(full_model)
+
+# Display VIFs in a nice table
+vif_table <- data.frame(
+  Predictor = names(vif_values),
+  VIF = round(vif_values, 2)
+)
+
+library(kableExtra)
+kbl(vif_table, caption = "Variance Inflation Factor (VIF) for Multicollinearity", 
+    booktabs = TRUE) %>%
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+**Conclusion:** All VIF values are well below 5, indicating no concerning multicollinearity among the predictors.
+
+
+---
+
+Since the normality assumption was violated, we attempt to fix this by applying a Box-Cox transformation to the response variable (rating). This method identifies an optimal power transformation (λ) to stabilize variance and make residuals more normally distributed.
+
+```{r, echo = FALSE}
+# Load MASS package for Box-Cox
+library(MASS)
+
+
+par(mar = c(5, 5, 0.5, 2))
+# Perform Box-Cox transformation on the original model
+boxcox_result <- boxcox(full_model, lambda = seq(-2, 2, 0.1), 
+                        main = "Box-Cox Transformation Plot",
+                        xlab = expression(lambda),
+                        ylab = "Log-Likelihood",
+                        col = "darkblue", lwd = 2)
+
+# Add best lambda line
+best_lambda <- boxcox_result$x[which.max(boxcox_result$y)]
+abline(v = best_lambda, col = "red", lty = 2, lwd = 2)
+
+# Add 95% confidence interval lines
+conf_interval <- range(boxcox_result$x[boxcox_result$y > max(boxcox_result$y) - qchisq(0.95, 1)/2])
+abline(v = conf_interval, col = "gray40", lty = 3)
+
+# Annotate lambda value
+text(best_lambda, max(boxcox_result$y), 
+     labels = paste0("  λ = ", round(best_lambda, 2)), 
+     pos = 4, col = "red")
+
+```
+
+The plot above shows the log-likelihood across various \lambda values. The optimal value of \lambda was approximately 0.91, which is close to 1, indicating only a mild transformation is needed.
+
+```{r, echo = FALSE, results = FALSE}
+# Apply transformation based on best lambda
+if (round(best_lambda, 2) == 0) {
+  clean_data$transformed_rating <- log(clean_data$rating)
+} else {
+  clean_data$transformed_rating <- (clean_data$rating^best_lambda - 1) / best_lambda
+}
+
+# Fit new model with transformed response
+transformed_model <- lm(transformed_rating ~ protein + sodium + fiber + sugars + vitamins + weight + cups,
+                        data = clean_data)
+
+# Summarize the new model
+summary(transformed_model)
+```
+
+#### Interpretation After Transformation
+
+From the transformed model output:
+
+	•	F-statistic = 118.1 on 7 and 66 degrees of freedom
+	•	p-value < 2.2e-16
+	•	Adjusted R² = 0.9182
+	•	Residual standard error = 2.832
+
+**Decision:** Reject H₀ (that all β’s are 0).
+
+**Conclusion:** The transformed model is statistically significant and explains over 91% of the variation in the transformed rating variable.
+
+
+---
+
+After applying the Box-Cox transformation and refitting the model, we now re-check all model assumptions to evaluate whether the transformation improved model diagnostics.
+
+#### Linearity Check
+
+```{r, echo = FALSE}
+# Residuals vs Fitted plot for transformed model
+par(mfrow = c(1, 1))
+
+plot(transformed_model$fitted.values, transformed_model$residuals,
+     main = "Residuals vs Fitted Values (Transformed Model)",
+     xlab = "Fitted Values",
+     ylab = "Residuals",
+     col = "steelblue", pch = 19)
+abline(h = 0, col = "red", lty = 2)
+```
+
+
+**Hypotheses:**
+
+- **H₀**: The relationship between each predictor and 
+	        the response is linear.
+-	**H₁**: The relationship is not linear.
+
+The updated plot shows the residuals are more tightly clustered around zero with no clear curvature, funneling, or systematic structure. The residual spread is more stable than in the original model, suggesting the linear relationship between predictors and the transformed response is more appropriate.
+
+
+#### **Normality Check**
+
+**Hypotheses:**  
+- **H₀**: The residuals are normally distributed  
+- **H₁**: The residuals are not normally distributed  
+
+
+```{r, echo = FALSE}
+# Histogram and Q-Q plot of residuals from transformed model
+par(mfrow = c(1, 2))
+
+# Histogram
+hist(transformed_model$residuals,
+     main = "Histogram of Residuals (TM)",
+     xlab = "Residuals",
+     col = "lightblue",
+     border = "white",
+     ylim = c(0,25))
+
+# Q-Q Plot
+qqnorm(transformed_model$residuals,
+       main = "Q-Q Plot of Residuals (TM)",
+       col = "steelblue", pch = 19)
+qqline(transformed_model$residuals, col = "red", lty = 2)
+
+```
+
+**Conclusion:** The histogram shows a bell-shaped pattern, and the Q-Q plot reveals the residuals mostly align with the diagonal line, though some deviation remains in the tails. Compared to the original model, residuals are closer to normality after transformation. This suggests the Box-Cox transformation improved normality, although small deviations still exist.
+
+
+#### Equal Variance Check
+
+**Hypotheses**
+
+- **H₀**: The residuals have constant variance (homoscedasticity)
+- **H₁**: The residuals do not have constant variance (heteroscedasticity)
+	
+```{r, echo = FALSE}
+# Residuals vs Fitted Values Plot (Transformed Model)
+par(mfrow = c(1, 1))
+
+plot(transformed_model$fitted.values, transformed_model$residuals,
+     main = "Residuals vs Fitted Values (TM)",
+     xlab = "Fitted Values",
+     ylab = "Residuals",
+     col = "steelblue", pch = 19)
+abline(h = 0, col = "red", lty = 2)
+```
+
+**Conclusion:** The residuals are spread fairly evenly around zero, with no strong funnel shape or clear change in spread. The variance appears stable across all fitted values. Therefore, the equal variance assumption appears reasonably satisfied after the transformation.
+
+#### Independence Check
+
+**Hypotheses**
+
+- **H₀**: The residuals are independent
+- **H₁**: The residuals are not independent
+	
+```{r, echo = FALSE}
+# Residuals vs Observation Order (TM)
+plot(transformed_model$residuals,
+     type = "b",
+     main = "Residuals vs Observation Order (TM)",
+     xlab = "Observation Order",
+     ylab = "Residuals",
+     col = "steelblue", pch = 19)
+abline(h = 0, col = "red", lty = 2)
+```	
+
+```{r, echo = FALSE, results = FALSE}
+# Durbin-Watson Test for Independence (Transformed Model)
+library(lmtest)
+dwtest(transformed_model)
+```
+
+**Durbin-Watson = 1.7641, p-value = 0.1315**
+
+**Conclusion:** Since the p-value is greater than 0.05, we do not reject H₀, suggesting no significant evidence of autocorrelation in the residuals. Combined with the plot, which shows some fluctuation but no consistent trend or cycle, we conclude that the independence assumption is reasonably satisfied.
+
+
+## Final Assumption Summary After Transformation
+
+After applying the Box-Cox transformation with an optimal λ ≈ 0.91, we reassessed all four key regression assumptions:
+
+#### Linearity
+
+- The residuals vs fitted plot shows a more stable spread, with no clear curvature 
+- Conclusion: The linearity assumption is reasonably satisfied in the transformed 
+	model.
+
+#### Normality
+
+- The histogram and Q-Q plot of residuals show better symmetry and reduced tail 
+	deviations compared to the original model.
+- Conclusion: The normality assumption appears reasonably satisfied.
+
+#### Equal Variance
+
+- The residual spread is more uniform across fitted values.
+- No funneling or increasing/decreasing patterns are visible.
+- Conclusion: The equal variance assumption is reasonably satisfied.
+
+#### Independence
+
+- The residuals vs observation order plot still shows mild fluctuation, 
+	 but no strong cycles.
+- Durbin-Watson test result: DW = 1.76, p = 0.13
+- Conclusion: There is no significant evidence of autocorrelation, 
+	 so the independence assumption is reasonably satisfied.
+	
+The original multiple linear regression model showed violations of the normality assumption, which prompted a Box-Cox transformation of the response variable. After transformation, the model’s fit remained strong (Adjusted R² ≈ 0.918), and all key assumptions — linearity, normality, equal variance, and independence — were reasonably satisfied based on visual diagnostics and formal testing. 
+
+This confirms that **the transformed model provides a more appropriate and statistically valid foundation for understanding the relationship between cereal characteristics and ratings**.
+
+
+# 3. Variable Selection
+
+Now that the transformed model meets all key regression assumptions, we aim to simplify it by removing predictors that do not significantly contribute to the model. This improves interpretability while maintaining predictive power.
+
+We will use backward selection, where all predictors start in the model, and we iteratively remove those with the highest p-values above the 0.10 threshold until only significant predictors remain. 
+
+```{r, echo = FALSE, results = FALSE}
+# Backward selection using stepAIC
+library(MASS)
+
+# Start with full model and use AIC as criterion
+stepwise_model <- stepAIC(transformed_model, direction = "backward", trace = FALSE)
+
+# Display the final selected model
+summary(stepwise_model)
+```
+
+The stepwise selection process initially retained all predictors, including some with p-values slightly above 0.10. However, to meet the significance threshold required for this analysis, we refined the model by removing any predictor with a p-value greater than 0.10.
+
+The final reduced model includes only the following predictors: *sodium, fiber, and sugars*, all of which have *strong* statistical significance.
+
+```{r, echo = FALSE, results=FALSE}
+# Final reduced model with only significant predictors
+final_model <- lm(transformed_rating ~ sodium + fiber + sugars, data = clean_data)
+summary(final_model)
+```
+
+## Model Summary
+
+- R² = 0.9192  /  Adjusted R² = 0.9158
+
+- F-statistic = 265.6 on 3 and 70 degrees of freedom
+
+- p-value < 2.2e-16
+
+## Coefficient Interpretation
+
+- Sodium (p < 0.001): A negative coefficient indicates that higher sodium content is associated with lower cereal ratings.
+
+- Fiber (p < 0.001): A positive coefficient suggests cereals with more fiber receive higher ratings.
+
+- Sugars (p < 0.001): A strong negative effect, meaning that sugar content significantly lowers cereal ratings.
+
+**Conclusion:**
+
+The final model keeps sodium, fiber, and sugars, the only predictors with strong and significant effects. **Higher fiber boosts ratings, while more sugar and more sodium lower them**. This aligns with health-conscious expectations and supports product improvement goals. With an adjusted R² of 0.916, the simplified model remains highly predictive and easy to interpret.
+
+---
+
+# 4. Conclusion
+
+This analysis explored how nutritional characteristics influence cereal ratings, using multiple linear regression to model relationships between seven predictors and the overall rating.
+
+The initial full model, using all seven predictors, had a high Adjusted R² of 0.918, indicating strong explanatory power. However, it included several variables that were not statistically significant.
+
+After applying a Box-Cox transformation to address a violation of the normality assumption and performing variable selection, the final reduced model retained only sodium, fiber, and sugars as significant predictors. The resulting model had an Adjusted R² of 0.9158, which is nearly identical to the original, meaning little explanatory power was lost despite simplifying the model.
+
+Interpretation of retained variables:
+
+- **Sodium**: Higher sodium content is significantly associated with lower cereal ratings.
+
+- **Fiber**: Cereals with more fiber tend to receive higher ratings.
+
+- **Sugars**: More sugar in a cereal is strongly linked to a decrease in its rating.
+
+In summary, cereals that are **lower** in **sugar and sodium** and **higher** in **fiber** tend to receive **better ratings**. These findings align with general health recommendations and offer useful guidance for product developers and consumers alike.
+
+
+---
+
+
+# Appendix
+
+```{r appendix, echo = TRUE, results = 'hide', warning = FALSE, message = FALSE, fig.keep = "none"}
+
+
+
+# Load packages
+library(kableExtra)
+library(MASS)
+library(lmtest)
+library(car)
+library(corrplot)
+
+
+# Load and clean data
+cereal_rating <- read.csv("~/Desktop/Stat 382/CerealsRating.csv")
+cereal_rating[cereal_rating == -1] <- NA
+clean_data <- na.omit(cereal_rating)
+
+# Descriptive stats for rating
+rating_summary <- summary(clean_data$rating)
+rating_sd <- sd(clean_data$rating)
+rating_var <- var(clean_data$rating)
+
+# Compute correlation matrix for relevant numeric columns
+cor_matrix <- cor(clean_data[, c("protein", "sodium", "fiber", "sugars", 
+                                 "vitamins", "weight", "cups", "rating")])
+
+# Correlation heatmap
+corrplot(cor_matrix,
+         method = "color",
+         type = "upper",
+         addCoef.col = "black",
+         tl.col = "black",
+         tl.srt = 45,
+         number.cex = 0.7,
+         title = "Correlation Heatmap of Predictors and Rating",
+         mar = c(0,0,2,0))
+
+# Descriptive stats for sugar
+sugar_summary <- summary(clean_data$sugars)
+sugar_sd <- sd(clean_data$sugars)
+sugar_var <- var(clean_data$sugars)
+
+# Histograms and boxplot
+hist(clean_data$sugars,
+     main = "Histogram of Sugar Content in Cereals",
+     xlab = "Grams of Sugar per Serving",
+     col = "lightcoral", border = "white", ylim = c(0, 20))
+
+par(mfrow = c(1, 2))
+hist(clean_data$rating,
+     main = "Histogram of Cereal Ratings",
+     xlab = "Rating", col = "skyblue", border = "white", ylim = c(0, 30))
+boxplot(clean_data$rating,
+        main = "Boxplot of Cereal Ratings",
+        xlab = "Cereal Rating", col = "lightpink", horizontal = TRUE)
+
+# Fit full model
+full_model <- lm(rating ~ protein + sodium + fiber + sugars + vitamins + weight + cups, data = clean_data)
+anova(full_model)
+summary(full_model)
+
+# Residuals vs fitted plot
+par(mfrow = c(1, 1))
+plot(full_model$fitted.values, full_model$residuals,
+     main = "Residuals vs Fitted Values", xlab = "Fitted Values", ylab = "Residuals",
+     col = "steelblue", pch = 19)
+abline(h = 0, col = "red", lty = 2)
+
+# Normality checks
+par(mfrow = c(1, 2))
+hist(full_model$residuals,
+     main = "Histogram of Residuals", xlab = "Residuals",
+     col = "lightblue", border = "white")
+qqnorm(full_model$residuals, main = "Q-Q Plot of Residuals",
+       col = "steelblue", pch = 19)
+qqline(full_model$residuals, col = "red", lty = 2)
+shapiro.test(full_model$residuals)
+
+# Equal variance check
+par(mfrow = c(1, 1))
+plot(full_model$fitted.values, full_model$residuals,
+     main = "Residuals vs Fitted Values", xlab = "Fitted Values", ylab = "Residuals",
+     col = "steelblue", pch = 19)
+abline(h = 0, col = "red", lty = 2)
+
+# Independence check
+plot(full_model$residuals, type = "b",
+     main = "Residuals vs Observation Order", xlab = "Observation Order", ylab = "Residuals",
+     col = "steelblue", pch = 19)
+abline(h = 0, col = "red", lty = 2)
+dwtest(full_model)
+
+# VIF check
+vif(full_model)
+
+# Box-Cox transformation
+par(mar = c(5, 5, 0.5, 2))
+boxcox_result <- boxcox(full_model, lambda = seq(-2, 2, 0.1),
+                        main = "Box-Cox Transformation Plot",
+                        xlab = expression(lambda), ylab = "Log-Likelihood",
+                        col = "darkblue", lwd = 2)
+best_lambda <- boxcox_result$x[which.max(boxcox_result$y)]
+abline(v = best_lambda, col = "red", lty = 2, lwd = 2)
+conf_interval <- range(boxcox_result$x[boxcox_result$y > max(boxcox_result$y) - qchisq(0.95, 1)/2])
+abline(v = conf_interval, col = "gray40", lty = 3)
+text(best_lambda, max(boxcox_result$y),
+     labels = paste0("  λ = ", round(best_lambda, 2)),
+     pos = 4, col = "red")
+
+# Apply Box-Cox transformation
+if (round(best_lambda, 2) == 0) {
+  clean_data$transformed_rating <- log(clean_data$rating)
+} else {
+  clean_data$transformed_rating <- (clean_data$rating^best_lambda - 1) / best_lambda
+}
+
+# Refit model with transformed response
+transformed_model <- lm(transformed_rating ~ protein + sodium + fiber + sugars + vitamins + weight + cups,
+                        data = clean_data)
+summary(transformed_model)
+
+# Residual plots (transformed)
+par(mfrow = c(1, 1))
+plot(transformed_model$fitted.values, transformed_model$residuals,
+     main = "Residuals vs Fitted Values (TM)", xlab = "Fitted Values",
+     ylab = "Residuals", col = "steelblue", pch = 19)
+abline(h = 0, col = "red", lty = 2)
+
+# Normality (transformed)
+par(mfrow = c(1, 2))
+hist(transformed_model$residuals, main = "Histogram of Residuals (TM)",
+     xlab = "Residuals", col = "lightblue", border = "white", ylim = c(0, 25))
+qqnorm(transformed_model$residuals, main = "Q-Q Plot of Residuals (TM)",
+       col = "steelblue", pch = 19)
+qqline(transformed_model$residuals, col = "red", lty = 2)
+
+# Independence (transformed)
+par(mfrow = c(1, 1))
+plot(transformed_model$residuals, type = "b",
+     main = "Residuals vs Observation Order (TM)", xlab = "Observation Order",
+     ylab = "Residuals", col = "steelblue", pch = 19)
+abline(h = 0, col = "red", lty = 2)
+dwtest(transformed_model)
+
+# Variable selection
+stepwise_model <- stepAIC(transformed_model, direction = "backward", trace = FALSE)
+summary(stepwise_model)
+
+# Final model
+final_model <- lm(transformed_rating ~ sodium + fiber + sugars, data = clean_data)
+summary(final_model)
+
+```
