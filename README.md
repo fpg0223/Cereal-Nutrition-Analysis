@@ -29,5 +29,5 @@ The final reduced model achieves an **Adjusted $R^2$ of 0.9158**, maintaining fu
 
 ### 📂 Files Included in this Repository:
 * `CerealsRating.csv`: The clean, processed dataset.
-* `Project STAT 481.Rmd`: The raw R Markdown source code containing the end-to-end data pipeline.
-* `Project-STAT-481.html`: The fully rendered, production-ready research report with dynamic plots and tables.
+* `Predicting_Cereal_Ratings.Rmd`: The raw R Markdown source code containing the end-to-end data pipeline.
+* `Predicting Cereal Ratings.pdf`: The fully rendered, production-ready research report with dynamic plots and tables.
